@@ -1,26 +1,29 @@
 import 'package:flutter/material.dart';
-import 'package:dual_screen_display/dual_screen_display.dart';
 import 'package:flutter/services.dart';
+import 'package:dual_screen_display/dual_screen_display.dart';
 
 void main() => runApp(const MyApp());
 
-// Secondary entrypoint for the customer screen:
+/// Secondary screen app entrypoint
 @pragma('vm:entry-point')
 void customerDisplayMain() {
   runApp(const CustomerDisplayApp());
 }
 
+/// Main app
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: 'Dual Screen Example',
       home: Scaffold(appBar: AppBar(title: const Text('Dual Screen Example')), body: const _Controls()),
     );
   }
 }
 
+/// Controls for primary screen
 class _Controls extends StatefulWidget {
   const _Controls();
 
@@ -30,17 +33,31 @@ class _Controls extends StatefulWidget {
 
 class _ControlsState extends State<_Controls> {
   int count = 0;
+  List<String> _eventLog = [];
 
   @override
   void initState() {
     super.initState();
-    count = 0;
+
+    // Subscribe to EventChannel from native
+    DualScreenDisplay.onEvent().listen(
+      (event) {
+        final type = event['type'];
+        final payload = event['payload'];
+        debugPrint("📺 Event received: $event");
+
+        setState(() {
+          _eventLog.insert(0, '[$type] $payload');
+        });
+      },
+      onError: (err) {
+        debugPrint('❌ Error receiving event: $err');
+      },
+    );
   }
 
   void incrementCount() {
-    setState(() {
-      count++;
-    });
+    setState(() => count++);
   }
 
   @override
@@ -52,69 +69,56 @@ class _ControlsState extends State<_Controls> {
           onPressed: () async {
             try {
               await DualScreenDisplay.startSecondaryFlutter();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Secondary Flutter started successfully')),
-              );
+              _showMessage(context, 'Secondary Flutter started');
             } catch (e) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error: $e')),
-              );
+              _showMessage(context, 'Error: $e');
             }
           },
-          child: const Text('Start secondary Flutter UI'),
+          child: const Text('Start Secondary Flutter UI'),
         ),
         ElevatedButton(
           onPressed: () async {
             try {
-              // Make sure we have the latest count value
-              print('Sending count: $count'); // Add debugging
-              
-              await DualScreenDisplay.secondarySetState({
-                'headline': 'Welcome!', 
-                'subtitle': 'Scan to pay', 
-                'count': count
+              await DualScreenDisplay.transferDataToPresentation({
+                'headline': 'Welcome!',
+                'subtitle': 'Scan to pay',
+                'count': count,
               });
-              
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('State sent successfully with count: $count')),
-              );
+              _showMessage(context, 'Sent state with count $count');
             } catch (e) {
-              print('Error sending state: $e'); // Add debugging
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error sending state: $e')),
-              );
+              _showMessage(context, 'Error sending state: $e');
             }
           },
-          child: const Text('Send state'),
+          child: const Text('Send State'),
         ),
         ElevatedButton(
           onPressed: () async {
             try {
               await DualScreenDisplay.stopSecondaryFlutter();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Secondary Flutter stopped')),
-              );
+              _showMessage(context, 'Stopped secondary Flutter');
             } catch (e) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error stopping: $e')),
-              );
+              _showMessage(context, 'Error stopping: $e');
             }
           },
-          child: const Text('Stop secondary UI'),
+          child: const Text('Stop Secondary UI'),
         ),
         const SizedBox(height: 24),
-        const Text('Secondary listens on MethodChannel("secondary_engine")'),
-        const SizedBox(height: 16),
         Text('Count: $count'),
-        ElevatedButton(
-          onPressed: incrementCount,
-          child: const Text('Increment Count'),
-        ),
+        ElevatedButton(onPressed: incrementCount, child: const Text('Increment Count')),
+        const Divider(height: 32),
+        const Text('📨 Incoming Events:', style: TextStyle(fontWeight: FontWeight.bold)),
+        ..._eventLog.take(6).map((e) => Text(e)).toList(),
       ],
     );
   }
+
+  void _showMessage(BuildContext context, String msg) {
+    debugPrint(msg);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 }
 
+/// Secondary display UI (customer screen)
 class CustomerDisplayApp extends StatefulWidget {
   const CustomerDisplayApp();
 
@@ -123,7 +127,7 @@ class CustomerDisplayApp extends StatefulWidget {
 }
 
 class _CustomerDisplayAppState extends State<CustomerDisplayApp> {
-  static const MethodChannel _secondaryEngineChannel = MethodChannel('secondary_engine');
+  static const MethodChannel _channel = MethodChannel('dual_screen_display');
   String headline = 'Hello';
   String subtitle = 'Waiting...';
   int count = 0;
@@ -131,29 +135,32 @@ class _CustomerDisplayAppState extends State<CustomerDisplayApp> {
   @override
   void initState() {
     super.initState();
-    debugPrint('CustomerDisplayApp initState called'); // Add debugging
-    
-    _secondaryEngineChannel.setMethodCallHandler((call) async {
-      debugPrint('Received method call: ${call.method} with args: ${call.arguments}'); // Add debugging
-      
-      if (call.method == 'secondarySetState') {
-        final Map args = (call.arguments as Map?) ?? {};
-        debugPrint('Processing secondarySetState with args: $args'); // Add debugging
-        
-        setState(() {
-          headline = args['headline']?.toString() ?? headline;
-          subtitle = args['subtitle']?.toString() ?? subtitle;
-          count = int.tryParse('${args['count'] ?? count}') ?? count;
-          debugPrint('Updated count to: $count'); // Add debugging
-        });
+
+    _channel.setMethodCallHandler((call) async {
+      debugPrint('Received method call: ${call.method}');
+      if (call.method == 'transferDataToPresentation') {
+        final args = call.arguments as Map?;
+        if (args is! Map) return;
+        final map = Map<String, dynamic>.from(args);
+        headline = map['headline']?.toString() ?? headline;
+        subtitle = map['subtitle']?.toString() ?? subtitle;
+        count = int.tryParse('${map['count'] ?? count}') ?? count;
+        setState(() {});
+
+        // Notify primary that we updated successfully
+        await _channel.invokeMethod('notifyPrimary', {'status': 'updated', 'count': count, 'headline': headline});
       }
     });
-    
-    debugPrint('Method call handler set up'); // Add debugging
+
+    // Notify primary app that secondary screen is ready
+    Future.delayed(const Duration(seconds: 1), () {
+      _channel.invokeMethod('notifyPrimary', {'status': 'ready', 'platform': 'secondary'});
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('⛳ BUILD: headline=$headline, subtitle=$subtitle, count=$count');
     return MaterialApp(
       theme: ThemeData.dark(),
       home: Scaffold(
